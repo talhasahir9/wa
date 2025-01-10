@@ -64,11 +64,41 @@ def check_wallet_balance(address, api_key):
     except Exception as e:
         return 0
 
+def get_token_balances(address, api_key):
+    """Fetches token balances for an Ethereum address using Etherscan API."""
+    url = f"https://api.etherscan.io/api"
+    params = {
+        "module": "account",
+        "action": "tokentx",
+        "address": address,
+        "page": 1,
+        "offset": 100,  # Retrieve 100 transactions per page
+        "apikey": api_key
+    }
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data["status"] == "1":
+            tokens = {}
+            for tx in data["result"]:
+                token_symbol = tx["tokenSymbol"]
+                token_value = float(tx["value"]) / (10 ** int(tx["tokenDecimal"]))  # Adjust for decimal places
+                if token_symbol in tokens:
+                    tokens[token_symbol] += token_value
+                else:
+                    tokens[token_symbol] = token_value
+            return tokens
+        else:
+            return {}
+    except Exception as e:
+        print(f"Error fetching token balances: {e}")
+        return {}
+
 def export_wallets_to_file(wallets, filename="wallets_with_balance.csv"):
     """Exports wallets with a balance greater than 0 to a CSV file."""
     with open(filename, mode="w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["Seed Phrase", "Wallet Address", "Balance (ETH)"])
+        writer.writerow(["Seed Phrase", "Wallet Address", "Balance (ETH)", "Tokens"])
         writer.writerows(wallets)
     print(f"Exported wallets to {filename}")
 
@@ -103,18 +133,27 @@ def main():
         balance = check_wallet_balance(wallet_address, api_key)
         print(f"Wallet Balance: {balance} ETH")
         
-        # Store wallets with balance > 0
-        if balance > 0:
-            wallets_with_balance.append((seed_phrase, wallet_address, balance))
-            print("Wallet has balance. Added to the export list.")
+        # Fetch token balances
+        token_balances = get_token_balances(wallet_address, api_key)
+        print("Tokens in wallet:")
+        if token_balances:
+            for token, token_balance in token_balances.items():
+                print(f"{token}: {token_balance} tokens")
         else:
-            print("Wallet has no balance.")
+            print("No tokens found.")
+        
+        # Store wallets with balance > 0
+        if balance > 0 or token_balances:
+            wallets_with_balance.append((seed_phrase, wallet_address, balance, token_balances))
+            print("Wallet has balance or tokens. Added to the export list.")
+        else:
+            print("Wallet has no balance and no tokens.")
     
     # Export results to a file
     if wallets_with_balance:
         export_wallets_to_file(wallets_with_balance)
     else:
-        print("No wallets with balance greater than 0 were found.")
+        print("No wallets with balance greater than 0 or tokens were found.")
 
 if __name__ == "__main__":
     main()
