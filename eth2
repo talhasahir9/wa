@@ -1,0 +1,155 @@
+import requests
+import csv
+import os
+from mnemonic import Mnemonic
+from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
+
+SEED_STORAGE_FILE = "generated_seeds.txt"
+BALANCE_WALLETS_FILE = "wallets_with_balance.csv"
+
+def load_existing_seeds():
+    """Loads existing seed phrases from a file to avoid duplicates."""
+    if not os.path.exists(SEED_STORAGE_FILE):
+        return set()
+    with open(SEED_STORAGE_FILE, "r") as file:
+        return set(file.read().splitlines())
+
+def save_seed_phrase(seed_phrase):
+    """Saves a new seed phrase to the file to avoid duplicates."""
+    with open(SEED_STORAGE_FILE, "a") as file:
+        file.write(seed_phrase + "\n")
+
+def generate_unique_bip39_seed_phrase(existing_seeds):
+    """Generates a unique BIP-39 mnemonic seed phrase that hasn't been used before."""
+    mnemo = Mnemonic("english")
+    while True:
+        seed_phrase = mnemo.generate(strength=128)  # 12-word phrase
+        if seed_phrase not in existing_seeds:
+            save_seed_phrase(seed_phrase)
+            return seed_phrase
+
+def derive_wallet_address(seed_phrase, coin):
+    """Derives a wallet address for a given blockchain (ETH or BNB)."""
+    seed_bytes = Bip39SeedGenerator(seed_phrase).Generate()
+    bip44_mst = Bip44.FromSeed(seed_bytes, coin)
+    account = bip44_mst.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+    return account.PublicKey().ToAddress()
+
+def check_wallet_balance(address, api_key, network="eth"):
+    """Checks the ETH/BNB balance of a wallet using Etherscan or BscScan."""
+    base_url = "https://api.etherscan.io/api" if network == "eth" else "https://api.bscscan.com/api"
+    
+    params = {
+        "module": "account",
+        "action": "balance",
+        "address": address,
+        "tag": "latest",
+        "apikey": api_key
+    }
+    try:
+        response = requests.get(base_url, params=params)
+        data = response.json()
+        if data["status"] == "1":
+            balance_wei = int(data["result"])
+            return balance_wei / 10**18  # Convert to ETH/BNB
+        return 0
+    except Exception as e:
+        print(f"Error checking balance for {network.upper()}: {e}")
+        return 0
+
+def get_token_balances(address, api_key, network="eth"):
+    """Fetches ERC-20 (ETH) or BEP-20 (BNB) token balances using Etherscan or BscScan."""
+    base_url = "https://api.etherscan.io/api" if network == "eth" else "https://api.bscscan.com/api"
+    
+    params = {
+        "module": "account",
+        "action": "tokentx",
+        "address": address,
+        "page": 1,
+        "offset": 100,
+        "apikey": api_key
+    }
+    try:
+        response = requests.get(base_url, params=params)
+        data = response.json()
+        if data["status"] == "1":
+            tokens = {}
+            for tx in data["result"]:
+                token_symbol = tx["tokenSymbol"]
+                token_value = float(tx["value"]) / (10 ** int(tx["tokenDecimal"]))
+                tokens[token_symbol] = tokens.get(token_symbol, 0) + token_value
+            return tokens
+        return {}
+    except Exception as e:
+        print(f"Error fetching token balances for {network.upper()}: {e}")
+        return {}
+
+def export_wallets_with_balance(wallets):
+    """Exports wallets with ETH, BNB, or token balances to a CSV file."""
+    if not wallets:
+        print("No wallets with balance found.")
+        return
+    
+    with open(BALANCE_WALLETS_FILE, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Seed Phrase", "ETH Wallet", "ETH Balance", "ETH Tokens", "BNB Wallet", "BNB Balance", "BNB Tokens"])
+        writer.writerows(wallets)
+    print(f"Exported wallets with balance to {BALANCE_WALLETS_FILE}")
+
+def main():
+    print("Ethereum & Binance Smart Chain Wallet Generator & Balance Checker")
+    
+    eth_api_key = input("Enter your Etherscan API key: ").strip()
+    bnb_api_key = input("Enter your BscScan API key: ").strip()
+    num_wallets = int(input("Enter the number of wallets to generate and check: ").strip())
+    
+    existing_seeds = load_existing_seeds()
+    wallets_with_balance = []
+    
+    for i in range(num_wallets):
+        print(f"\nProcessing wallet {i + 1} of {num_wallets}...")
+        
+        # Generate unique seed phrase
+        seed_phrase = generate_unique_bip39_seed_phrase(existing_seeds)
+        print(f"Seed Phrase: {seed_phrase}")
+        
+        # Derive wallet addresses for ETH & BNB
+        eth_wallet = derive_wallet_address(seed_phrase, Bip44Coins.ETHEREUM)
+        bnb_wallet = derive_wallet_address(seed_phrase, Bip44Coins.BINANCE_SMART_CHAIN)
+        
+        print(f"Ethereum Wallet: {eth_wallet}")
+        print(f"BNB Wallet: {bnb_wallet}")
+        
+        # Check balances
+        eth_balance = check_wallet_balance(eth_wallet, eth_api_key, "eth")
+        bnb_balance = check_wallet_balance(bnb_wallet, bnb_api_key, "bnb")
+        
+        print(f"ETH Balance: {eth_balance} ETH")
+        print(f"BNB Balance: {bnb_balance} BNB")
+        
+        # Fetch token balances
+        eth_tokens = get_token_balances(eth_wallet, eth_api_key, "eth")
+        bnb_tokens = get_token_balances(bnb_wallet, bnb_api_key, "bnb")
+
+        if eth_tokens:
+            print("ETH Tokens:")
+            for token, amount in eth_tokens.items():
+                print(f"{token}: {amount}")
+        
+        if bnb_tokens:
+            print("BNB Tokens:")
+            for token, amount in bnb_tokens.items():
+                print(f"{token}: {amount}")
+        
+        # Store wallets with balance > 0 ETH, BNB, or tokens
+        if eth_balance > 0 or bnb_balance > 0 or eth_tokens or bnb_tokens:
+            wallets_with_balance.append((seed_phrase, eth_wallet, eth_balance, eth_tokens, bnb_wallet, bnb_balance, bnb_tokens))
+            print("Wallet has balance or tokens. Added to export list.")
+        else:
+            print("Wallet has no balance and no tokens.")
+
+    # Export results to a file
+    export_wallets_with_balance(wallets_with_balance)
+
+if __name__ == "__main__":
+    main()
